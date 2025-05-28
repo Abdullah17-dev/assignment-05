@@ -1,43 +1,63 @@
 import os
-from dotenv import load_dotenv, find_dotenv
+from dotenv import load_dotenv
 from litellm import completion
 import json
 import chainlit as cl
 
-load_dotenv(find_dotenv())
-gemini_api_key = os.getenv("GEMINI_API_KEY")
-gemini_model = os.getenv("GEMINI_MODEL")
 
-conversation = []
+load_dotenv()
+
+openrouter_api_key = os.getenv("OPENROUTER_API_KEY")
+
+if not openrouter_api_key:
+    raise ValueError("OPENROUTER_API_KEY is not set. Please ensure it is defined in your .env file.")
+
 
 @cl.on_chat_start
 async def start():
-    await cl.Message(content="Hi! I am your chatbot. Ask me anything.").send()
+    cl.user_session.set("chat_history", [])
+    await cl.Message(content="How can I help you today?").send()
+
 
 @cl.on_message
-async def handle_message(message: cl.Message):
-    user_message = message.content
-    conversation.append({"role": "user", "content": user_message})
+async def main(message: cl.Message):
+    msg = cl.Message(content="Thinking...")
+    await msg.send()
 
-    full_response = ""
-    bot_message = cl.Message(content="")
+    history = cl.user_session.get("chat_history") or []
+    history.append({"role": "user", "content": message.content})
 
-    
-    async for chunk in completion(
-        model=gemini_model,
-        messages=[{"role": "user", "content": user_message}],
-        api_key=gemini_api_key,
-        stream=True
-    ):
-        delta = chunk.choices[0].delta.content or ""
-        full_response += delta
-        await bot_message.stream_token(delta)
+    try:
+        response =  completion(
+            model="mistralai/devstral-small:free",
+            api_key=openrouter_api_key,
+            api_base="https://openrouter.ai/api/v1",
+            messages=history,  
+            stream=True  
+        )
 
-    await bot_message.send()
-    conversation.append({"role": "assistant", "content": full_response})
+        full_response = ""
+        async for chunk in response:
+            token = chunk.choices[0].delta.get("content", "")
+            full_response += token
+            await msg.stream_token(token)
+
+        await msg.update()
+
+        history.append({"role": "assistant", "content": full_response})
+        cl.user_session.set("chat_history", history)
+        print(f"user: {message.content}")
+        print(f"Assistant: {full_response}")
+
+    except Exception as e:
+        msg.content = f"Error: {str(e)}"
+        await msg.update()
+        print(f"Error: {str(e)}")
+
 
 @cl.on_chat_end
-def end():
+async def end():
+    history = cl.user_session.get("chat_history") or []
     with open("chat_history.json", "w", encoding="utf-8") as f:
-        json.dump(conversation, f, indent=2, ensure_ascii=False)
-
+        json.dump(history, f, indent=2, ensure_ascii=False)
+    print("Chat history saved.")
